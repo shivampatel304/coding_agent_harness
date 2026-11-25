@@ -1,6 +1,8 @@
 import OpenAI from "openai";
 import { readFileSync, readdirSync } from "node:fs";
 import { config } from "dotenv";
+import { spawnSync } from "node:child_process";
+import * as readline from "node:readline/promises";
 
 config({ path: "../.env" });
 
@@ -12,6 +14,13 @@ if(!apiKey || !model){
 }
 
 const client = new OpenAI({apiKey});
+
+const rl = readline.createInterface({input: process.stdin, output: process.stdout});
+
+async function confirm(question: string): Promise<boolean> {
+    const answer = await rl.question(`${question} [y/N] `);
+    return answer.trim().toLowerCase() === "y";
+}
 
 const tools = [
     {
@@ -38,15 +47,36 @@ const tools = [
         },
         strict: true,
     },
+    {
+        type: "function" as const,
+        name: "run_command",
+        description: "Run a shell command in the current folder and return its exit code and output.",
+        parameters: {
+            type: "object",
+            properties: { command: { type: "string", description: "The shell command to run"}},
+            required: ["command"],
+            additionalProperties: false,
+        },
+        strict: true,
+    }
     
 ];
 
-const run: Record<string, (args: any) => string> = {
+const run: Record<string, (args: any) => string | Promise<string>> = {
     read_file: (args) => readFileSync(args.path, "utf-8"),
+
     list_files: (args) => readdirSync(args.path, { withFileTypes: true})
     .filter((e) => e.name !== "node_modules" && e.name !== ".git")
     .map((e) => (e.isDirectory() ? e.name + "/" : e.name))
     .join("\n"),
+
+    run_command: async (args) => {
+        console.log(`\n The agent wants to run: ${args.command}`);
+        if(!(await confirm(" Allow?"))) return "The user refused to run this command.";
+        const r = spawnSync(args.command, { shell: true, encoding: "utf8", timeout: 30_000});
+        const output = `${r.stdout ?? ""} ${r.stderr ?? ""}`.slice(0,10_000);
+        return `exit code: ${r.status}\n${output}${r.error ? `\nerror: ${r.error.message}`: ""}`;
+    },
 };
 
 const input: any[] = [
@@ -82,7 +112,7 @@ for(let step=1; step<=10; step++){
         let result: string;
         try{
             if (!run[call.name]) throw new Error(`unknown tool ${call.name}`);
-            result = run[call.name](JSON.parse(call.arguments));
+            result = await run[call.name](JSON.parse(call.arguments));
         }catch (err){
             result = `Error: ${(err as Error).message}`;
         }
