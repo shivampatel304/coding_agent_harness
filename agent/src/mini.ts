@@ -26,6 +26,8 @@ async function confirm(question: string): Promise<boolean> {
   return answer.trim().toLowerCase() === "y";
 }
 
+let controller: AbortController | null = null;
+
 const tools = [
   {
     type: "function" as const,
@@ -128,12 +130,7 @@ const run: Record<string, (args: any) => string | Promise<string>> = {
   },
 };
 
-const input: any[] = [
-  {
-    role: "user",
-    content: process.argv[2] ?? "What is the project name in package.json",
-  },
-];
+const input: any[] = [];
 
 const instructions = `You are a coding agent working in the user's project folder. You can list files, read files, edit files and run shell commands.
 
@@ -152,13 +149,18 @@ Rules:
 - Do not read or print secrets files such as .env.
 - Do not make changes the task did not ask for.
 
-When you finish, reply in this format:
+When you finish developing or fixing bug, reply in this format:
 Cause: ...
 Change: ...
-Verification: (the test command you ran and its result)`;
+Verification: (the test command you ran and its result)
 
-try {
+If user ask simple question you can reply directly with answer.`;
+
+async function runAgent(userText: string) {
+  input.push({role:"user", content: userText});
+
   for (let step = 1; step <= 10; step++) {
+  
     console.log(`\n[call ${step}] sending ${input.length} items to the model`);
     const response = await client.responses.create({
       model,
@@ -167,7 +169,7 @@ try {
       instructions,
     });
 
-    console.log("Output : ", response.output);
+    console.log("tokens:", response.usage?.input_tokens, "in,", response.usage?.output_tokens, "out");
 
     input.push(...response.output);
 
@@ -202,6 +204,21 @@ try {
       });
     }
   }
-} finally {
-  rl.close();
 }
+
+while(true){
+  const line = (await rl.question("\n> ")).trim();
+
+  if(!line) continue;
+  if(line === "/exit")  break;
+  if(line === "/clear") {
+    if(await confirm(" Are you sure you want to clear the history? \n")){
+      input.length = 0;
+    }
+    continue;
+  }
+  
+  await runAgent(line);
+}
+
+rl.close();
